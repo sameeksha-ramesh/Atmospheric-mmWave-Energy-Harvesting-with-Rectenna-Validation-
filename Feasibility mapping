@@ -1,0 +1,174 @@
+% feasibility_mapping.m
+% =====================
+% Atmospheric mmWave Energy Harvesting — Feasibility Mapping
+% Sameeksha R | VIT Chennai + IIT Madras
+%
+% Beer-Lambert + HITRAN-inspired absorption model across 57–325 GHz.
+% Identifies optimal harvest frequencies:
+%   183 GHz → short range (<20 m)
+%    60 GHz → long range (>80 m)
+%
+% Run: feasibility_mapping
+% Outputs saved to ../outputs/ as .png
+ 
+clear; clc; close all;
+ 
+%% ── Constants ─────────────────────────────────────────────────────────────
+c       = 3e8;       % m/s
+T_K     = 293.15;    % K  (20°C)
+RH_pct  = 60;        % % relative humidity
+ 
+%% ── HITRAN-inspired spectral line database ─────────────────────────────────
+% [center_GHz, peak_dB_per_km, half_width_GHz, species_id]
+%  species_id: 1=O2, 2=H2O
+spectral_lines = [
+     60.00,  15.0,  4.0, 1;   % O2 60 GHz complex
+    118.75,   2.5,  1.5, 1;   % O2 118 GHz
+     22.24,   0.18, 1.2, 2;   % H2O 22 GHz
+    183.31,  28.0,  2.0, 2;   % H2O 183 GHz (strong)
+    325.15,  85.0,  3.5, 2;   % H2O 325 GHz
+];
+ 
+%% ── Water vapour density (Magnus formula) ─────────────────────────────────
+T_C    = T_K - 273.15;
+e_sat  = 6.1078 * exp(17.27 * T_C / (T_C + 237.3));   % hPa
+e_act  = (RH_pct / 100) * e_sat;
+rho_w  = 216.7 * e_act / T_K;                           % g/m³
+ 
+% Standard (60% RH) density for H2O scaling
+RH_std = 60;
+e_act_std = (RH_std / 100) * e_sat;
+rho_std   = 216.7 * e_act_std / T_K;
+ 
+%% ── Frequency sweep ────────────────────────────────────────────────────────
+freq  = linspace(57, 325, 2000);   % GHz
+alpha = atmospheric_absorption(freq, spectral_lines, rho_w, rho_std);
+ 
+%% ── Plot 1: Absorption spectrum ────────────────────────────────────────────
+fig1 = figure('Position', [100 100 1200 480]);
+semilogy(freq, alpha, 'Color', [0.1 0.1 0.15], 'LineWidth', 1.5);
+hold on;
+ 
+% Dry-air continuum
+alpha_dry = 0.005 * (freq/100).^2;
+semilogy(freq, alpha_dry, '--', 'Color', [0.5 0.5 0.5], ...
+         'LineWidth', 0.9, 'DisplayName', 'Dry-air continuum');
+ 
+% Harvest window annotations
+windows = struct(...
+    'center', {35, 60, 94, 140, 183, 220, 325}, ...
+    'bw',     {10,  8,  6,   8,   4,  10,   5}, ...
+    'label',  {'35 GHz', '60 GHz\n(O_2)', '94 GHz', '140 GHz', ...
+               '183 GHz\n(H_2O)', '220 GHz', '325 GHz'}, ...
+    'harvest',{true, true, true, true, true, true, false} ...
+);
+for i = 1:length(windows)
+    lo = windows(i).center - windows(i).bw/2;
+    hi = windows(i).center + windows(i).bw/2;
+    col = [0.18 0.8 0.44];   % green
+    if ~windows(i).harvest, col = [0.9 0.2 0.2]; end
+    patch([lo hi hi lo], [1e-3 1e-3 1e3 1e3], col, ...
+          'FaceAlpha', 0.12, 'EdgeColor', 'none');
+    text(windows(i).center, 1e-2, windows(i).label, ...
+         'HorizontalAlignment', 'center', 'FontSize', 7.5, ...
+         'FontWeight', 'bold', 'Color', col*0.7);
+end
+ 
+yline(10, ':', 'Color', [0.9 0.2 0.2], 'LineWidth', 1, ...
+      'Label', '10 dB/km', 'LabelHorizontalAlignment', 'left');
+yline(1,  ':', 'Color', [0.18 0.8 0.44], 'LineWidth', 1, ...
+      'Label', '1 dB/km',  'LabelHorizontalAlignment', 'left');
+ 
+xlabel('Frequency (GHz)', 'FontSize', 11);
+ylabel('Absorption coefficient (dB/km)', 'FontSize', 11);
+title(sprintf('Atmospheric mmWave Absorption Spectrum (57–325 GHz)\nBeer-Lambert / HITRAN model | RH = %d%%', RH_pct), ...
+      'FontSize', 11);
+xlim([57 325]); ylim([1e-3 1e3]);
+grid on; box on;
+xticks(60:20:325);
+ 
+saveas(fig1, '../outputs/matlab_absorption_spectrum.png');
+fprintf('  Saved: matlab_absorption_spectrum.png\n');
+ 
+%% ── Plot 2: Received power vs distance ─────────────────────────────────────
+fig2 = figure('Position', [100 100 950 480]);
+hold on;
+ 
+harvest_freqs = [60, 94, 140, 183, 325];
+labels        = {'60 GHz (long-range)', '94 GHz (W-band)', ...
+                 '140 GHz (D-band)', '183 GHz (short-range)', '325 GHz (very short)'};
+colors_rgb    = [0.90 0.50 0.14;
+                 0.15 0.68 0.38;
+                 0.56 0.27 0.68;
+                 0.91 0.30 0.24;
+                 0.17 0.24 0.31];
+distances = linspace(1, 100, 500);
+ 
+for i = 1:length(harvest_freqs)
+    f = harvest_freqs(i);
+    p_rx = zeros(1, length(distances));
+    for j = 1:length(distances)
+        d = distances(j);
+        fspl  = 20*log10(4*pi*d*f*1e9/c);
+        alph  = atmospheric_absorption(f, spectral_lines, rho_w, rho_std);
+        l_atm = alph * (d/1000);
+        p_rx(j) = 30 - fspl - l_atm;   % Tx = 30 dBm, isotropic
+    end
+    plot(distances, p_rx, 'Color', colors_rgb(i,:), 'LineWidth', 2, ...
+         'DisplayName', labels{i});
+end
+ 
+yline(-30, '--', 'Color', [0.5 0.5 0.5], 'LineWidth', 1.2, ...
+      'Label', 'Rectenna sensitivity (−30 dBm)', 'LabelHorizontalAlignment', 'left');
+xline(20, ':', 'Color', [0.91 0.30 0.24], 'LineWidth', 1, ...
+      'Label', '20 m boundary');
+xline(80, ':', 'Color', [0.90 0.50 0.14], 'LineWidth', 1, ...
+      'Label', '80 m boundary');
+ 
+xlabel('Distance (m)', 'FontSize', 11);
+ylabel('Received Power (dBm)', 'FontSize', 11);
+title(sprintf('Received Power vs Distance — Key mmWave Harvest Frequencies\nTx=30 dBm | RH=%d%%', RH_pct), ...
+      'FontSize', 11);
+legend('Location', 'northeast', 'FontSize', 9);
+xlim([1 100]); grid on; box on;
+ 
+saveas(fig2, '../outputs/matlab_power_vs_distance.png');
+fprintf('  Saved: matlab_power_vs_distance.png\n');
+ 
+%% ── Feasibility table ──────────────────────────────────────────────────────
+fprintf('\n%s\n', repmat('=',1,65));
+fprintf('  FEASIBILITY SUMMARY | RH=%d%%\n', RH_pct);
+fprintf('%s\n', repmat('=',1,65));
+fprintf('  %-12s %-14s %-10s %-10s  %s\n', ...
+        'Freq (GHz)', 'Alpha(dB/km)', 'L@10m(dB)', 'L@50m(dB)', 'Verdict');
+fprintf('  %s\n', repmat('-',1,60));
+test_freqs = [35 60 94 140 183 220 325];
+for f = test_freqs
+    alp = atmospheric_absorption(f, spectral_lines, rho_w, rho_std);
+    if     alp < 2,   verdict = 'LONG-RANGE  ✓';
+    elseif alp < 20,  verdict = 'MID-RANGE   ~';
+    elseif alp < 50,  verdict = 'SHORT-RANGE ◑';
+    else,             verdict = 'VERY SHORT  ✗';
+    end
+    fprintf('  %-12d %-14.2f %-10.2f %-10.2f  %s\n', ...
+            f, alp, alp*0.01, alp*0.05, verdict);
+end
+fprintf('%s\n\n', repmat('=',1,65));
+ 
+ 
+%% ── Helper function ────────────────────────────────────────────────────────
+function alpha = atmospheric_absorption(freq_GHz, lines, rho_w, rho_std)
+% Returns total atmospheric absorption (dB/km) for given frequency (array or scalar).
+    alpha = 0.005 * (freq_GHz/100).^2;   % dry-air continuum
+    for k = 1:size(lines,1)
+        center = lines(k,1);
+        peak   = lines(k,2);
+        hw     = lines(k,3);
+        sp     = lines(k,4);
+        lorentz = peak * hw^2 ./ ((freq_GHz - center).^2 + hw^2);
+        if sp == 2   % H2O: scale by actual vs standard vapour density
+            lorentz = lorentz * (rho_w / rho_std);
+        end
+        alpha = alpha + lorentz;
+    end
+end
