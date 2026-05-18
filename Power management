@@ -1,0 +1,174 @@
+% power_management.m
+% ==================
+% Atmospheric mmWave Energy Harvesting — Power Management Architecture Validation
+% Sameeksha R | VIT Chennai + IIT Madras
+%
+% Simulates the complete power management chain:
+%   RF Input → Rectenna → MPPT → Supercapacitor Storage → IoT Load
+%
+% Validates that 50–500 nW harvest can sustain a duty-cycled IoT sensor node.
+%
+% Run: power_management
+% Outputs saved to ../outputs/ as .png
+ 
+clear; clc; close all;
+ 
+%% ── Architecture parameters ────────────────────────────────────────────────
+ 
+% Rectenna (Schottky diode model)
+RECT.freq_GHz    = 183.0;
+RECT.eff_peak    = 0.42;
+RECT.p_opt_dBm   = -10;      % optimal input power
+RECT.sigma_dB    = 12;       % efficiency curve width
+ 
+% MPPT (fractional OCV)
+MPPT.ocv_frac    = 0.76;
+MPPT.efficiency  = 0.88;
+MPPT.v_out       = 1.8;      % V output rail
+ 
+% Supercapacitor storage
+STOR.C_uF        = 100;      % µF
+STOR.v_max       = 3.3;      % V
+STOR.v_min       = 1.2;      % V (LDO dropout)
+STOR.soc0_pct    = 50;       % % initial SoC
+STOR.i_leak_nA   = 10;       % nA self-discharge
+ 
+% IoT node duty-cycle (all in µW / ms)
+LOAD.p_sense     = 50;       % µW
+LOAD.p_process   = 200;
+LOAD.p_transmit  = 2000;
+LOAD.p_sleep     = 1;
+LOAD.t_sense     = 10;       % ms
+LOAD.t_process   = 5;
+LOAD.t_transmit  = 2;
+LOAD.t_sleep     = 1000;
+T_cycle = LOAD.t_sense + LOAD.t_process + LOAD.t_transmit + LOAD.t_sleep;
+P_avg_uW = (LOAD.p_sense*LOAD.t_sense + LOAD.p_process*LOAD.t_process + ...
+            LOAD.p_transmit*LOAD.t_transmit + LOAD.p_sleep*LOAD.t_sleep) / T_cycle;
+ 
+fprintf('\n%s\n', repmat('=',1,60));
+fprintf('  POWER MANAGEMENT ARCHITECTURE\n');
+fprintf('%s\n', repmat('=',1,60));
+fprintf('  IoT average power   : %.2f µW (%.0f nW)\n', P_avg_uW, P_avg_uW*1e3);
+fprintf('  Harvest required    : %.0f nW (after MPPT η=%.0f%%)\n', ...
+        P_avg_uW*1e3/MPPT.efficiency, MPPT.efficiency*100);
+fprintf('  Storage             : %.0f µF, %.1f–%.1f V\n', STOR.C_uF, STOR.v_min, STOR.v_max);
+fprintf('%s\n\n', repmat('=',1,60));
+ 
+%% ─────────────────────────────────────────────────────────────────────────
+%  Plot 1: Rectenna efficiency vs input power
+%% ─────────────────────────────────────────────────────────────────────────
+p_range = linspace(-50, 10, 400);
+eff_nl  = RECT.eff_peak * exp(-((p_range - RECT.p_opt_dBm).^2) / (2*RECT.sigma_dB^2));
+eff_nl  = max(eff_nl, 0.01);
+p_dc_nW = (10.^(p_range/10)) .* eff_nl * 1e6;   % nW
+ 
+fig1 = figure('Position', [50 50 1100 440]);
+subplot(1,2,1);
+plot(p_range, eff_nl*100, 'Color', [0.91 0.30 0.24], 'LineWidth', 2);
+hold on;
+yline(RECT.eff_peak*100, '--', 'Color', [0.5 0.5 0.5], 'LineWidth', 1.5, ...
+      'Label', 'Ideal flat');
+xline(RECT.p_opt_dBm, ':', 'Color', [0.90 0.50 0.14], 'LineWidth', 1.5, ...
+      'Label', sprintf('Optimal = %d dBm', RECT.p_opt_dBm));
+patch([-50 -30 -30 -50], [0 0 55 55], 'r', 'FaceAlpha', 0.08, 'EdgeColor', 'none');
+text(-40, 5, 'Ultra-low power region', 'FontSize', 8, 'Color', [0.7 0.1 0.1], ...
+     'HorizontalAlignment', 'center');
+xlabel('RF Input Power (dBm)'); ylabel('Efficiency (%)');
+title(sprintf('Rectenna RF-to-DC Efficiency\n%.0f GHz Schottky Model', RECT.freq_GHz));
+ylim([0 50]); grid on; box on;
+ 
+subplot(1,2,2);
+semilogy(p_range, max(p_dc_nW, 1e-3), 'Color', [0.16 0.50 0.73], 'LineWidth', 2);
+hold on;
+patch([-50 10 10 -50], [50 50 500 500], 'g', 'FaceAlpha', 0.1, 'EdgeColor', 'none');
+yline(50,  ':', 'Color', [0.2 0.7 0.3], 'LineWidth', 1);
+yline(500, ':', 'Color', [0.2 0.7 0.3], 'LineWidth', 1);
+text(-20, 150, '50–500 nW target', 'FontSize', 9, 'Color', [0.1 0.5 0.2], ...
+     'HorizontalAlignment', 'center');
+xlabel('RF Input Power (dBm)'); ylabel('DC Output Power (nW)');
+title('DC Power Output vs RF Input (log scale)');
+grid on; box on;
+ 
+sgtitle('Rectenna Model — RF-to-DC Conversion', 'FontSize', 11);
+saveas(fig1, '../outputs/matlab_rectenna_efficiency.png');
+fprintf('  Saved: matlab_rectenna_efficiency.png\n');
+ 
+%% ─────────────────────────────────────────────────────────────────────────
+%  Plot 2: Supercapacitor storage simulation
+%% ─────────────────────────────────────────────────────────────────────────
+scenarios = struct( ...
+    'label',  {'183 GHz 10m RH60% (border)', '60 GHz 20m RH60% (stable)', '183 GHz 10m RH90% (monsoon)'}, ...
+    'h_nW',   {120, 250, 40}, ...
+    'color',  {[0.91 0.30 0.24], [0.15 0.68 0.38], [0.90 0.50 0.14]} ...
+);
+ 
+fig2 = figure('Position', [50 50 1200 720]);
+dt_ms  = 50;
+dur_s  = 3600;
+n_steps = round(dur_s / (dt_ms/1000));
+t_vec  = linspace(0, dur_s/60, n_steps);
+ 
+p_bal_all = zeros(length(scenarios), n_steps);
+ 
+for s = 1:length(scenarios)
+    sc = scenarios(s);
+    [t_arr, v_arr, p_bal] = simulate_storage(sc.h_nW, P_avg_uW, STOR, MPPT, dur_s, dt_ms);
+    p_bal_all(s,:) = p_bal;
+ 
+    subplot(2, 2, s);
+    plot(t_arr/60, v_arr, 'Color', sc.color, 'LineWidth', 1.5);
+    hold on;
+    yline(STOR.v_min, 'r--', 'LineWidth', 1, 'Label', 'V_{min}');
+    yline(STOR.v_max, 'b--', 'LineWidth', 1, 'Label', 'V_{max}');
+    yline(MPPT.v_out, ':', 'Color', [0.5 0.5 0.5], 'LineWidth', 1, ...
+          'Label', sprintf('V_{target} (%.1f V)', MPPT.v_out));
+    xlabel('Time (min)'); ylabel('Capacitor Voltage (V)');
+    title(sc.label, 'FontSize', 9, 'FontWeight', 'bold', 'Color', sc.color);
+    ylim([0.8 3.6]); grid on; box on;
+end
+ 
+subplot(2, 2, 4);
+hold on;
+for s = 1:length(scenarios)
+    plot(t_vec, p_bal_all(s,:), 'Color', scenarios(s).color, ...
+         'LineWidth', 1.5, 'DisplayName', scenarios(s).label);
+end
+yline(0, 'k-', 'LineWidth', 1, 'Alpha', 0.5);
+xlabel('Time (min)'); ylabel('Net Power Balance (nW)');
+title('Net Power Balance Over Time (positive = charging)');
+legend('Location', 'best', 'FontSize', 7);
+grid on; box on;
+ 
+sgtitle(sprintf('Power Management Simulation — %d µF Supercapacitor | IoT Load %.1f µW avg', ...
+        STOR.C_uF, P_avg_uW), 'FontSize', 10);
+saveas(fig2, '../outputs/matlab_storage_simulation.png');
+fprintf('  Saved: matlab_storage_simulation.png\n');
+ 
+fprintf('\nAll power management figures saved to ../outputs/\n');
+ 
+%% ── Helper functions ────────────────────────────────────────────────────────
+function [t_arr, v_arr, p_bal] = simulate_storage(h_nW, load_uW, STOR, MPPT, dur_s, dt_ms)
+    dt_s   = dt_ms / 1000;
+    n      = round(dur_s / dt_s);
+    C      = STOR.C_uF * 1e-6;
+    v_cap  = STOR.v_min + (STOR.soc0_pct/100) * (STOR.v_max - STOR.v_min);
+ 
+    p_harv = h_nW * MPPT.efficiency;         % effective harvest (nW)
+    p_load = load_uW * 1e3;                  % nW
+    i_leak = STOR.i_leak_nA * 1e-9;          % A
+ 
+    t_arr = zeros(1, n);
+    v_arr = zeros(1, n);
+    p_bal = zeros(1, n);
+ 
+    for i = 1:n
+        p_leak  = i_leak * v_cap * 1e9;      % nW
+        p_net   = p_harv - p_load - p_leak;
+        dv      = (p_net * 1e-9 * dt_s) / (C * max(v_cap, 0.01));
+        v_cap   = min(max(v_cap + dv, STOR.v_min), STOR.v_max);
+        t_arr(i) = i * dt_s;
+        v_arr(i) = v_cap;
+        p_bal(i) = p_net;
+    end
+end
