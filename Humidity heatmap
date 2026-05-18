@@ -1,0 +1,227 @@
+% humidity_heatmap.m
+% ==================
+% Atmospheric mmWave Energy Harvesting — Humidity Sensitivity & Heat Maps
+% Sameeksha R | VIT Chennai + IIT Madras
+%
+% Generates:
+%   1. Received power vs RH for key harvest frequencies (60–325 GHz)
+%   2. Frequency–Distance 2D heat maps (full + short-range)
+%   3. RH comparison heat maps (20%, 60%, 90%)
+%
+% Run: humidity_heatmap
+% Outputs saved to ../outputs/ as .png
+ 
+clear; clc; close all;
+ 
+%% ── Shared parameters ──────────────────────────────────────────────────────
+c          = 3e8;
+T_K        = 293.15;
+TX_dBm     = 30;
+ETA_rect   = 0.40;   % rectenna efficiency
+ 
+spectral_lines = [
+     60.00,  15.0,  4.0, 1;
+    118.75,   2.5,  1.5, 1;
+     22.24,   0.18, 1.2, 2;
+    183.31,  28.0,  2.0, 2;
+    325.15,  85.0,  3.5, 2;
+];
+ 
+harvest_freqs  = [60, 94, 140, 183, 325];
+freq_labels    = {'60 GHz', '94 GHz', '140 GHz', '183 GHz', '325 GHz'};
+freq_colors    = [0.90 0.50 0.14;
+                  0.15 0.68 0.38;
+                  0.56 0.27 0.68;
+                  0.91 0.30 0.24;
+                  0.17 0.24 0.31];
+ 
+RH_sweep  = linspace(5, 95, 200);
+dist_fixed = 10;   % m
+ 
+%% ─────────────────────────────────────────────────────────────────────────
+%  Plot 1: Power vs RH (all harvest frequencies, fixed distance)
+%% ─────────────────────────────────────────────────────────────────────────
+fig1 = figure('Position', [50 50 1200 480]);
+subplot(1,2,1); hold on;
+subplot(1,2,2); hold on;
+ 
+for i = 1:length(harvest_freqs)
+    f      = harvest_freqs(i);
+    p_dBm  = zeros(1, length(RH_sweep));
+    p_nW   = zeros(1, length(RH_sweep));
+ 
+    for j = 1:length(RH_sweep)
+        [rho_w, rho_std] = vapour_density(RH_sweep(j), T_K);
+        alph  = atm_absorption(f, spectral_lines, rho_w, rho_std);
+        fspl  = 20*log10(4*pi*dist_fixed*f*1e9/c);
+        p_dBm(j) = TX_dBm - fspl - alph*(dist_fixed/1000);
+        p_mW     = 10^(p_dBm(j)/10);
+        p_nW(j)  = p_mW * ETA_rect * 1e6;
+    end
+ 
+    subplot(1,2,1);
+    plot(RH_sweep, p_dBm, 'Color', freq_colors(i,:), 'LineWidth', 2, ...
+         'DisplayName', freq_labels{i});
+ 
+    subplot(1,2,2);
+    semilogy(RH_sweep, max(p_nW, 1e-3), 'Color', freq_colors(i,:), ...
+             'LineWidth', 2, 'DisplayName', freq_labels{i});
+end
+ 
+subplot(1,2,1);
+xlabel('Relative Humidity (%)'); ylabel('Received Power (dBm)');
+title(sprintf('Power vs RH — d = %d m | Tx = %d dBm', dist_fixed, TX_dBm));
+legend('Location', 'best', 'FontSize', 8);
+xlim([5 95]); grid on;
+ 
+subplot(1,2,2);
+patch([5 95 95 5], [50 50 500 500], 'g', 'FaceAlpha', 0.1, 'EdgeColor', 'none');
+yline(50,  ':', 'Color', [0.2 0.7 0.3], 'LineWidth', 1);
+yline(500, ':', 'Color', [0.2 0.7 0.3], 'LineWidth', 1);
+text(50, 150, '50–500 nW target', 'FontSize', 8, 'Color', [0.1 0.5 0.2], ...
+     'HorizontalAlignment', 'center');
+xlabel('Relative Humidity (%)'); ylabel('Harvestable Power (nW)');
+title(sprintf('Harvestable DC Power vs RH (\\eta = %.0f%%)', ETA_rect*100));
+legend('Location', 'best', 'FontSize', 8);
+xlim([5 95]); grid on;
+ 
+sgtitle('Humidity Sensitivity Analysis — mmWave Harvest Frequencies', 'FontSize', 11);
+saveas(fig1, '../outputs/matlab_humidity_sensitivity.png');
+fprintf('  Saved: matlab_humidity_sensitivity.png\n');
+ 
+%% ─────────────────────────────────────────────────────────────────────────
+%  Plot 2: Full frequency–distance heat map (57–325 GHz, 1–100 m)
+%% ─────────────────────────────────────────────────────────────────────────
+fprintf('  Building full heat map...\n');
+freq_grid = linspace(57, 325, 300);
+dist_grid = linspace(1, 100, 200);
+ 
+RH_ref = 60;
+[rho_w, rho_std] = vapour_density(RH_ref, T_K);
+alpha_vec = atm_absorption(freq_grid, spectral_lines, rho_w, rho_std);
+ 
+P_grid = zeros(length(dist_grid), length(freq_grid));
+for i = 1:length(dist_grid)
+    d    = dist_grid(i);
+    fspl = 20*log10(4*pi*d*(freq_grid*1e9)/c);
+    l_atm = alpha_vec * (d/1000);
+    p_dBm_row = TX_dBm - fspl - l_atm;
+    p_mW_row  = 10.^(p_dBm_row/10);
+    P_grid(i,:) = p_mW_row * ETA_rect * 1e6;   % nW
+end
+ 
+P_log = log10(max(P_grid, 1e-3));
+ 
+fig2 = figure('Position', [50 50 1200 550]);
+imagesc(freq_grid, dist_grid, P_log);
+set(gca, 'YDir', 'normal');
+colormap(hot);
+cb = colorbar;
+cb.Label.String = 'log_{10}(Harvestable Power / nW)';
+cb.Ticks = -3:1:4;
+cb.TickLabels = arrayfun(@(v) sprintf('10^{%d} nW', v), -3:1:4, 'UniformOutput', false);
+ 
+hold on;
+yline(20, 'c-',  'LineWidth', 1.2, 'Label', '20 m boundary');
+yline(80, 'g-',  'LineWidth', 1.2, 'Label', '80 m boundary');
+for f_line = [60 94 140 183 220]
+    xline(f_line, 'w--', 'LineWidth', 0.8, 'Alpha', 0.5);
+    text(f_line, 98, sprintf('%d GHz', f_line), 'Color', 'w', ...
+         'FontSize', 7, 'HorizontalAlignment', 'center');
+end
+ 
+xlabel('Frequency (GHz)', 'FontSize', 11);
+ylabel('Distance (m)', 'FontSize', 11);
+title(sprintf('Frequency–Distance Harvest Power Heat Map | RH=%d%% | Tx=%d dBm | \\eta=%.0f%%', ...
+      RH_ref, TX_dBm, ETA_rect*100), 'FontSize', 11);
+xticks(60:20:325);
+ 
+saveas(fig2, '../outputs/matlab_heatmap_full.png');
+fprintf('  Saved: matlab_heatmap_full.png\n');
+ 
+%% ─────────────────────────────────────────────────────────────────────────
+%  Plot 3: Short-range heat map + RH comparison (1–30 m, 3 panels)
+%% ─────────────────────────────────────────────────────────────────────────
+fprintf('  Building RH comparison heat maps...\n');
+dist_zoom  = linspace(1, 30, 150);
+RH_compare = [20, 60, 90];
+cmaps      = {'cool', 'hot', 'summer'};
+ 
+fig3 = figure('Position', [50 50 1400 450]);
+vmin = -1; vmax = 3.5;
+ 
+for k = 1:3
+    RH_k = RH_compare(k);
+    [rho_w_k, rho_std_k] = vapour_density(RH_k, T_K);
+    alpha_k = atm_absorption(freq_grid, spectral_lines, rho_w_k, rho_std_k);
+ 
+    P_k = zeros(length(dist_zoom), length(freq_grid));
+    for i = 1:length(dist_zoom)
+        d    = dist_zoom(i);
+        fspl = 20*log10(4*pi*d*(freq_grid*1e9)/c);
+        l_atm = alpha_k * (d/1000);
+        p_row = TX_dBm - fspl - l_atm;
+        p_nW  = 10.^(p_row/10) * ETA_rect * 1e6;
+        P_k(i,:) = p_nW;
+    end
+    P_k_log = log10(max(P_k, 1e-3));
+ 
+    subplot(1,3,k);
+    imagesc(freq_grid, dist_zoom, P_k_log, [vmin vmax]);
+    set(gca, 'YDir', 'normal');
+    colormap(gca, inferno_approx());
+    if k == 3
+        cb = colorbar;
+        cb.Label.String = 'log_{10}(Harvestable Power / nW)';
+    end
+    hold on;
+    yline(20, 'c--', 'LineWidth', 1);
+    xlabel('Frequency (GHz)', 'FontSize', 10);
+    if k == 1, ylabel('Distance (m)', 'FontSize', 10); end
+    title(sprintf('RH = %d%%', RH_k), 'FontSize', 11, 'FontWeight', 'bold');
+    xticks(60:60:325);
+end
+ 
+sgtitle('RH Impact on Harvest Power — Frequency–Distance Maps (1–30 m)', 'FontSize', 11);
+saveas(fig3, '../outputs/matlab_heatmap_rh_comparison.png');
+fprintf('  Saved: matlab_heatmap_rh_comparison.png\n');
+ 
+fprintf('\nAll humidity & heatmap figures saved to ../outputs/\n');
+ 
+%% ── Helper functions ────────────────────────────────────────────────────────
+function [rho_w, rho_std] = vapour_density(RH_pct, T_K)
+    T_C     = T_K - 273.15;
+    e_sat   = 6.1078 * exp(17.27 * T_C / (T_C + 237.3));
+    rho_w   = 216.7 * (RH_pct/100 * e_sat) / T_K;
+    rho_std = 216.7 * (60/100      * e_sat) / T_K;
+end
+ 
+function alpha = atm_absorption(freq_GHz, lines, rho_w, rho_std)
+    alpha = 0.005 * (freq_GHz/100).^2;
+    for k = 1:size(lines,1)
+        center  = lines(k,1);
+        peak    = lines(k,2);
+        hw      = lines(k,3);
+        species = lines(k,4);
+        lorentz = peak * hw^2 ./ ((freq_GHz - center).^2 + hw^2);
+        if species == 2
+            lorentz = lorentz * (rho_w / rho_std);
+        end
+        alpha = alpha + lorentz;
+    end
+end
+ 
+function cmap = inferno_approx()
+    % Approximate inferno colormap for MATLAB versions without it
+    t = linspace(0,1,256)';
+    r = min(1, 0.001462 + t.*(0.998847 + t.*(-1.462 + t.*1.0)));
+    g = min(1, max(0, t.*(1.4 - t.*0.9)));
+    b = min(1, max(0, 0.015*(1-t) + t.*(0.5*(1-t))));
+    % Simplified: use parula fallback if available
+    try
+        cmap = parula(256); % fallback
+        cmap = flipud(cmap);
+    catch
+        cmap = [r g b];
+    end
+end
